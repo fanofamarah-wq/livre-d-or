@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Notre Livre d'Or - Mariage</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .font-serif { font-family: 'Playfair Display', serif; }
+        .mirror-mode { transform: scaleX(-1); }
+        .pulse-ring { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(1.05); } }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+    <div id="root"></div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, Timestamp, query, orderBy } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+        import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
+        import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client';
+
+        // --- Configuration ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'livre-d-or-b68e5';
+        const ADMIN_PIN = "1234";
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('record'); // 'record' or 'listen'
+            const [mediaMode, setMediaMode] = useState('audio'); // 'audio' or 'video'
+            const [isRecording, setIsRecording] = useState(false);
+            const [mediaURL, setMediaURL] = useState(null);
+            const [mediaBlob, setMediaBlob] = useState(null);
+            const [guestName, setGuestName] = useState('');
+            const [pinInput, setPinInput] = useState('');
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [showPinError, setShowPinError] = useState(false);
+            const [messages, setMessages] = useState([]);
+            const [isUploading, setIsUploading] = useState(false);
+
+            const mediaRecorderRef = useRef(null);
+            const chunksRef = useRef([]);
+            const videoPreviewRef = useRef(null);
+
+            // Initialize Lucide icons on every render
+            useEffect(() => { lucide.createIcons(); });
+
+            // Auth
+            useEffect(() => {
+                const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
+                    if (!u) signInAnonymously(auth);
+                    setUser(u);
+                });
+                return () => unsubscribeAuth();
+            }, []);
+
+            // Fetch Data
+            useEffect(() => {
+                if (!user || !isAuthenticated) return;
+                const q = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+                        .sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
+                    setMessages(msgs);
+                });
+                return () => unsubscribe();
+            }, [user, isAuthenticated]);
+
+            const startRecording = async () => {
+                try {
+                    const constraints = { 
+                        audio: true, 
+                        video: mediaMode === 'video' ? { facingMode: 'user' } : false 
+                    };
+                    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    
+                    if (mediaMode === 'video' && videoPreviewRef.current) {
+                        videoPreviewRef.current.srcObject = stream;
+                    }
+
+                    mediaRecorderRef.current = new MediaRecorder(stream);
+                    chunksRef.current = [];
+                    mediaRecorderRef.current.ondataavailable = (e) => chunksRef.current.push(e.data);
+                    mediaRecorderRef.current.onstop = () => {
+                        const blob = new Blob(chunksRef.current, { type: mediaMode === 'video' ? 'video/webm' : 'audio/webm' });
+                        setMediaBlob(blob);
+                        setMediaURL(URL.createObjectURL(blob));
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+                    mediaRecorderRef.current.start();
+                    setIsRecording(true);
+                } catch (err) { alert("Erreur d'accès micro/caméra"); }
+            };
+
+            const stopRecording = () => {
+                if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
+                setIsRecording(false);
+            };
+
+            const saveMessage = async () => {
+                if (!mediaBlob || !guestName.trim()) return;
+                setIsUploading(true);
+                const reader = new FileReader();
+                reader.readAsDataURL(mediaBlob);
+                reader.onloadend = async () => {
+                    try {
+                        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
+                            name: guestName,
+                            mediaData: reader.result,
+                            type: mediaMode,
+                            timestamp: Timestamp.now(),
+                            userId: user?.uid
+                        });
+                        setMediaURL(null);
+                        setGuestName('');
+                        setIsUploading(false);
+                        if (isAuthenticated) setView('listen');
+                        else alert("Message envoyé ! Merci ❤️");
+                    } catch (e) { alert("Erreur lors de l'envoi"); setIsUploading(false); }
+                };
+            };
+
+            return React.createElement('div', { className: 'p-4 md:p-8' },
+                // Header
+                React.createElement('header', { className: 'max-w-2xl mx-auto text-center mb-8' },
+                    React.createElement('div', { className: 'flex justify-center mb-4' },
+                        React.createElement('div', { className: 'bg-rose-100 p-3 rounded-full text-rose-500' }, 
+                            React.createElement('i', { 'data-lucide': 'heart', className: 'w-8 h-8 fill-current' })
+                        )
+                    ),
+                    React.createElement('h1', { className: 'text-4xl font-serif font-bold text-slate-800 mb-2' }, "Notre Livre d'Or"),
+                    React.createElement('p', { className: 'text-slate-500 italic' }, "Laissez-nous un souvenir vocal ou vidéo")
+                ),
+
+                // Nav
+                React.createElement('nav', { className: 'max-w-md mx-auto flex gap-2 mb-8 bg-white p-1 rounded-xl shadow-sm border' },
+                    React.createElement('button', { 
+                        onClick: () => setView('record'),
+                        className: `flex-1 py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-all ${view === 'record' ? 'bg-rose-500 text-white shadow-md' : 'text-slate-500'}`
+                    }, React.createElement('i', { 'data-lucide': 'mic', className: 'w-4 h-4' }), "Enregistrer"),
+                    React.createElement('button', { 
+                        onClick: () => setView('listen'),
+                        className: `flex-1 py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-all ${view === 'listen' ? 'bg-rose-500 text-white shadow-md' : 'text-slate-500'}`
+                    }, React.createElement('i', { 'data-lucide': isAuthenticated ? 'unlock' : 'lock', className: 'w-4 h-4' }), "Archives")
+                ),
+
+                // Main Content
+                React.createElement('main', { className: 'max-w-lg mx-auto' },
+                    view === 'record' ? (
+                        React.createElement('div', { className: 'bg-white rounded-3xl shadow-xl p-6 md:p-8 text-center' },
+                            !mediaURL ? (
+                                React.createElement(React.Fragment, null,
+                                    React.createElement('div', { className: 'mb-6 text-left' },
+                                        React.createElement('label', { className: 'block text-sm font-medium mb-2' }, "Votre Nom"),
+                                        React.createElement('input', { 
+                                            value: guestName, 
+                                            onChange: (e) => setGuestName(e.target.value),
+                                            className: 'w-full px-4 py-3 rounded-xl border focus:ring-2 focus:ring-rose-500 outline-none',
+                                            placeholder: 'Ex: Julie & Marc'
+                                        })
+                                    ),
+                                    React.createElement('div', { className: 'flex bg-slate-100 p-1 rounded-lg mb-6' },
+                                        ['audio', 'video'].map(m => React.createElement('button', {
+                                            key: m,
+                                            onClick: () => setMediaMode(m),
+                                            className: `flex-1 py-1.5 rounded-md text-sm font-medium transition-all ${mediaMode === m ? 'bg-white shadow text-rose-600' : 'text-slate-500'}`
+                                        }, m.charAt(0).toUpperCase() + m.slice(1)))
+                                    ),
+                                    React.createElement('div', { className: 'relative flex flex-col items-center' },
+                                        mediaMode === 'video' && isRecording && React.createElement('video', { ref: videoPreviewRef, autoPlay: true, muted: true, className: 'w-full aspect-video bg-black rounded-2xl mb-4 mirror-mode' }),
+                                        isRecording && mediaMode === 'audio' && React.createElement('div', { className: 'w-32 h-32 mb-4 bg-rose-100 rounded-full pulse-ring flex items-center justify-center text-rose-500' }, React.createElement('i', { 'data-lucide': 'mic', className: 'w-12 h-12' })),
+                                        React.createElement('button', {
+                                            onClick: isRecording ? stopRecording : startRecording,
+                                            disabled: !guestName.trim(),
+                                            className: `w-20 h-20 rounded-full flex items-center justify-center shadow-lg transition-all ${isRecording ? 'bg-slate-800' : 'bg-rose-500'} text-white disabled:opacity-50`
+                                        }, React.createElement('i', { 'data-lucide': isRecording ? 'square' : (mediaMode === 'audio' ? 'mic' : 'video') })),
+                                        React.createElement('p', { className: 'mt-4 text-slate-600 font-medium' }, isRecording ? "On vous écoute..." : "Appuyez pour parler")
+                                    )
+                                )
+                            ) : (
+                                React.createElement('div', { className: 'space-y-6' },
+                                    React.createElement('div', { className: 'bg-rose-50 p-4 rounded-2xl border' },
+                                        mediaMode === 'video' ? React.createElement('video', { src: mediaURL, controls: true, className: 'w-full rounded-lg' }) : React.createElement('audio', { src: mediaURL, controls: true, className: 'w-full' })
+                                    ),
+                                    React.createElement('div', { className: 'flex gap-3' },
+                                        React.createElement('button', { onClick: () => setMediaURL(null), className: 'flex-1 py-3 border rounded-xl text-slate-600 hover:bg-slate-50' }, "Effacer"),
+                                        React.createElement('button', { onClick: saveMessage, disabled: isUploading, className: 'flex-1 py-3 bg-emerald-500 text-white rounded-xl shadow-lg disabled:opacity-50' }, isUploading ? "Envoi..." : "Envoyer")
+                                    )
+                                )
+                            )
+                        )
+                    ) : (
+                        // Archive View
+                        !isAuthenticated ? (
+                            React.createElement('div', { className: 'bg-white rounded-3xl shadow-xl p-8 text-center' },
+                                React.createElement('i', { 'data-lucide': 'lock', className: 'w-12 h-12 mx-auto mb-4 text-slate-300' }),
+                                React.createElement('h2', { className: 'text-xl font-bold mb-4' }, "Espace Mariés"),
+                                React.createElement('form', { 
+                                    onSubmit: (e) => {
+                                        e.preventDefault();
+                                        if (pinInput === ADMIN_PIN) setIsAuthenticated(true);
+                                        else { setShowPinError(true); setPinInput(''); }
+                                    }
+                                },
+                                    React.createElement('input', {
+                                        type: 'password',
+                                        value: pinInput,
+                                        onChange: (e) => setPinInput(e.target.value),
+                                        placeholder: 'Code PIN',
+                                        className: `w-full text-center text-2xl tracking-[0.5em] p-3 rounded-xl border mb-4 ${showPinError ? 'border-rose-500 ring-rose-100' : ''}`
+                                    }),
+                                    React.createElement('button', { className: 'w-full py-3 bg-slate-800 text-white rounded-xl font-bold' }, "Déverrouiller")
+                                )
+                            )
+                        ) : (
+                            React.createElement('div', { className: 'space-y-4' },
+                                React.createElement('div', { className: 'flex justify-between items-center mb-4' },
+                                    React.createElement('h3', { className: 'font-bold' }, `Messages (${messages.length})`),
+                                    React.createElement('button', { onClick: () => setIsAuthenticated(false), className: 'text-xs text-slate-400 underline' }, "Se déconnecter")
+                                ),
+                                messages.map(msg => React.createElement('div', { key: msg.id, className: 'bg-white p-4 rounded-2xl shadow-sm border' },
+                                    React.createElement('div', { className: 'flex items-center gap-3 mb-3' },
+                                        React.createElement('div', { className: 'w-10 h-10 bg-rose-50 rounded-full flex items-center justify-center text-rose-500' }, React.createElement('i', { 'data-lucide': msg.type === 'video' ? 'video' : 'mic', className: 'w-5 h-5' })),
+                                        React.createElement('div', null,
+                                            React.createElement('h4', { className: 'font-bold' }, msg.name),
+                                            React.createElement('span', { className: 'text-[10px] text-slate-400' }, msg.timestamp?.toDate().toLocaleString())
+                                        )
+                                    ),
+                                    msg.type === 'video' ? React.createElement('video', { src: msg.mediaData, controls: true, className: 'w-full rounded-lg' }) : React.createElement('audio', { src: msg.mediaData, controls: true, className: 'w-full h-10' })
+                                ))
+                            )
+                        )
+                    )
+                ),
+                
+                React.createElement('footer', { className: 'mt-12 text-center text-slate-300 text-xs py-8' }, "Livre d'Or Virtuel • livre-d-or-b68e5")
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(App));
+    </script>
+</body>
+</html>
